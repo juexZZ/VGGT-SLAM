@@ -25,7 +25,7 @@
 * [💻 Installation](#installation-of-vGGT-sLAM)
 * [🚀 Quick Start](#quick-start)
 * [📊 Running Evaluations](#running-evaluations)
-* [📄 Updates](#updates)
+* [📄 News and Updates](#News-and-Updates)
 * [📄 Paper Citation](#citation)
 
 ---
