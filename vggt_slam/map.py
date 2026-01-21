@@ -30,12 +30,14 @@ class GraphMap:
         overall_best_score = 1000
         overall_best_submap_id = 0
         overall_best_frame_index = 0
-        # search for best image to target image
+        # search for best image to target image, overall: the best submap, and the best frame index in that submap
         for submap_key in self.submaps.keys():
             if submap_key == current_submap_id:
+                # skip the current submap
                 continue
 
             if ignore_last_submap and (submap_key == current_submap_id-1):
+                # skip the last submap
                 continue
 
             else:
@@ -43,6 +45,7 @@ class GraphMap:
                 submap_embeddings = submap.get_all_retrieval_vectors()
                 scores = []
                 for embedding in submap_embeddings:
+                    # score is defined as the L2 distance between the embedding and the query vector, the smaller the better
                     score = torch.linalg.norm(embedding-query_vector)
                     scores.append(score.item())
                 

@@ -36,6 +36,8 @@ class LoopMatchQueue:
         self.heap = []  # Simulated max-heap by negating scores
 
     def add(self, match: LoopMatch):
+        #! this is weird, the similarity score in the Map class is score = torch.linalg.norm(embedding-query_vector), the smaller the better
+        #! it is returning the loop closures from the least similar to the most similar (sorted reverse=True)
         # Negate similarity_score to turn min-heap into max-heap
         item = (-match.similarity_score, match)
         # item = (-match.detected_submap_id, match)
@@ -80,6 +82,7 @@ class ImageRetrieval:
         query_id = 0
         for query_vector in submap.get_all_retrieval_vectors():
             best_score, best_submap_id, best_frame_id = map.retrieve_best_score_frame(query_vector, submap.get_id(), ignore_last_submap=True)
+            # print("loop closure score", best_score)
             if best_score < max_similarity_thres:
                 new_match_data = LoopMatch(best_score, submap.get_id(), query_id, best_submap_id, best_frame_id)
                 matches_queue.add(new_match_data)
