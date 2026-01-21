@@ -32,6 +32,8 @@ parser.add_argument("--use_point_map", action="store_true", help="Use point map 
 parser.add_argument("--conf_threshold", type=float, default=25.0, help="Initial percentage of low-confidence points to filter out")
 parser.add_argument("--vis_stride", type=int, default=1, help="Stride interval in the 3D point cloud image for visualization. Try increasing (such as 4) to reduce lag in visualizing large maps.")
 parser.add_argument("--vis_point_size", type=float, default=0.003, help="Visualization point size")
+parser.add_argument("--save_pointcloud", type=str, default=None, help="Directory to save the point cloud file (e.g., output.pcd). If provided, point cloud will be saved before visualization.")
+parser.add_argument("--keep_alive", action="store_true", help="Keep the viser server alive until manual shutdown (press Enter to exit)")
 
 def main():
     """
@@ -111,6 +113,14 @@ def main():
         # just show the map after all submaps have been processed
         solver.update_all_submap_vis()
 
+    # Save point cloud if requested
+    if args.save_pointcloud:
+        print(f"Saving point cloud to {args.save_pointcloud}...")
+        os.makedirs(args.save_pointcloud, exist_ok=True)
+        file_name = os.path.join(args.save_pointcloud, "result.pcd")
+        solver.map.write_points_to_file(file_name)
+        print("Point cloud saved successfully!")
+
     if args.log_results:
         solver.map.write_poses_to_file(args.log_path)
 
@@ -135,6 +145,17 @@ def main():
         plt.ylabel("Focal lengths")
         plt.grid()
         plt.show()
+
+    # Keep viser server alive if visualization is shown (or if explicitly requested)
+    # Visualization is shown if --vis_map is set or if final map is displayed (when not using --vis_map)
+    visualization_shown = args.vis_map or (not args.vis_map and solver.map.get_num_submaps() > 0)
+    should_keep_alive = args.keep_alive or visualization_shown
+    if should_keep_alive and not solver.gradio_mode:
+        print("\nViser server is running. Press Enter to exit...")
+        try:
+            input()
+        except KeyboardInterrupt:
+            print("\nShutting down...")
 
 
 if __name__ == "__main__":
