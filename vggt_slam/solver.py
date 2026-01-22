@@ -7,6 +7,7 @@ import open3d as o3d
 import viser
 import viser.transforms as viser_tf
 from termcolor import colored
+from typing import Dict, List
 
 from vggt.utils.geometry import closed_form_inverse_se3, unproject_depth_map_to_point_map
 from vggt.utils.load_fn import load_and_preprocess_images
@@ -279,7 +280,7 @@ class Solver:
             prior_pcd_num = self.map.get_largest_key()
             prior_submap = self.map.get_submap(prior_pcd_num)
 
-            current_pts = world_points[0,...].reshape(-1, 3)
+            current_pts = world_points[0,...].reshape(-1, 3) # find the first frame in the current submap
         
             # TODO conf should be using the threshold in its own submap
             good_mask = self.prior_conf > prior_submap.get_conf_threshold() * (conf[0,...,:].reshape(-1) > prior_submap.get_conf_threshold())
@@ -317,7 +318,8 @@ class Solver:
             # pcd2.points = o3d.utility.Vector3dVector(points)
             # # pcd2 = color_point_cloud_by_confidence(pcd2, conf_flat, cmap='jet')
             # o3d.visualization.draw_geometries([pcd1, pcd2])
-
+            
+            #! the previous submap's anchor point map (self.prior_pcd, taken from the previous submap's last non-loop frame).
             non_lc_frame = self.current_working_submap.get_last_non_loop_frame_index()
             pts_cam0_camn = world_points[non_lc_frame,...].reshape(-1, 3)
             self.prior_pcd = pts_cam0_camn
@@ -395,7 +397,21 @@ class Solver:
         pixel_coords = torch.stack((y_coords, x_coords), dim=1)
         return pixel_coords
 
-    def run_predictions(self, image_names, model, max_loops):
+    def _resize_semantic_embeddings(self, semantic_embeddings: np.ndarray, target_hw: tuple[int, int]) -> np.ndarray:
+        """
+        Resize semantic embeddings (S,H,W,d) to target (H,W) if needed.
+        """
+        th, tw = target_hw
+        if semantic_embeddings.shape[1] == th and semantic_embeddings.shape[2] == tw:
+            return semantic_embeddings
+        resized = []
+        for i in range(semantic_embeddings.shape[0]):
+            emb = semantic_embeddings[i].astype(np.float32)
+            emb_rs = cv2.resize(emb, (tw, th), interpolation=cv2.INTER_LINEAR)
+            resized.append(emb_rs)
+        return np.stack(resized, axis=0).astype(np.float32)
+
+    def run_predictions(self, image_names, model, max_loops, semantic_embeddings=None):
         device = "cuda" if torch.cuda.is_available() else "cpu"
         images = load_and_preprocess_images(image_names).to(device)
         print(f"Preprocessed images shape: {images.shape}")
@@ -415,6 +431,7 @@ class Solver:
         detected_loops = self.image_retrieval.find_loop_closures(self.map, new_submap, max_loop_closures=max_loops)
         if len(detected_loops) > 0:
             print(colored("detected_loops", "yellow"), detected_loops)
+        # loop closure frames from (num=max_loops) submaps
         retrieved_frames = self.map.get_frames_from_loops(detected_loops)
 
         num_loop_frames = len(retrieved_frames)
@@ -426,6 +443,26 @@ class Solver:
             # TODO we don't really need to store the loop closure frame again, but this makes lookup easier for the visualizer.
             # We added the frame to the submap once before to get the retrieval vectors,
             new_submap.add_all_frames(images)
+
+        # Optional dense semantic embeddings aligned to the (possibly-extended) `images` tensor.
+        # Expected output: (S, H, W, d) for the *non-loop* frames in `image_names`.
+        if semantic_embeddings is not None:
+            sem = np.asarray(semantic_embeddings)
+            if sem.ndim != 4:
+                raise ValueError(f"semantic_embeddings must be (S,H,W,d), got shape={sem.shape}")
+
+            # Resize semantic to match VGGT preprocess resolution (H,W from images tensor)
+            target_hw = (int(images.shape[-2]), int(images.shape[-1]))
+            sem = self._resize_semantic_embeddings(sem, target_hw)
+
+            # If loop frames were appended, pad semantic embeddings with zeros for those frames.
+            if images.shape[0] != sem.shape[0]:
+                d = sem.shape[-1]
+                padded = np.zeros((int(images.shape[0]), target_hw[0], target_hw[1], d), dtype=np.float32)
+                padded[: sem.shape[0]] = sem.astype(np.float32)
+                sem = padded
+
+            new_submap.add_all_semantic_embeddings(sem)
 
         self.current_working_submap = new_submap
 

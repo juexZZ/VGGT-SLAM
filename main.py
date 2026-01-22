@@ -34,6 +34,14 @@ parser.add_argument("--vis_stride", type=int, default=1, help="Stride interval i
 parser.add_argument("--vis_point_size", type=float, default=0.003, help="Visualization point size")
 parser.add_argument("--save_pointcloud", type=str, default=None, help="Directory to save the point cloud file (e.g., output.pcd). If provided, point cloud will be saved before visualization.")
 parser.add_argument("--keep_alive", action="store_true", help="Keep the viser server alive until manual shutdown (press Enter to exit)")
+parser.add_argument("--semantic_emb_dir", type=str, default=None, help="Directory containing per-image semantic embeddings as .npz (same stem as image filename), key 'embedding'=(H,W,d).")
+parser.add_argument("--get_voxel", action="store_true", help="Build, save, and visualize a global semantic voxel map after SLAM finishes (requires --semantic_emb_dir).")
+parser.add_argument("--voxel_size", type=float, default=0.05, help="Voxel size (meters) for semantic voxelization.")
+parser.add_argument("--voxel_save_dir", type=str, default=None, help="Directory to save semantic voxel map (writes voxels.npz + frame_names.json).")
+parser.add_argument("--voxel_port", type=int, default=8081, help="Port for semantic voxelmap viser server.")
+parser.add_argument("--voxel_point_size", type=float, default=0.01, help="Point size for voxel visualization in viser.")
+parser.add_argument("--colmap_images_txt", type=str, default=None, help="Optional COLMAP images.txt to align predicted map to real-world scale (Sim3).")
+parser.add_argument("--align_no_scale", action="store_true", help="If set, align with SE3 only (no scale). Default is Sim3 with scale.")
 
 def main():
     """
@@ -87,7 +95,22 @@ def main():
         # Run submap processing if enough images are collected or if it's the last group of images.
         if len(image_names_subset) == args.submap_size + args.overlapping_window_size or image_name == image_names[-1]:
             print(image_names_subset)
-            predictions = solver.run_predictions(image_names_subset, model, args.max_loops)
+            semantic_embeddings = None
+            if args.semantic_emb_dir is not None:
+                # Load per-image embeddings from disk and stack into (S,H,W,d).
+                print(f"Loading semantic embeddings from {args.semantic_emb_dir}...")
+                embs = []
+                for img_path in image_names_subset:
+                    stem = os.path.splitext(os.path.basename(img_path))[0]
+                    emb_path = os.path.join(args.semantic_emb_dir, f"{stem}.npz")
+                    if not os.path.exists(emb_path):
+                        raise FileNotFoundError(f"Missing semantic embedding for {img_path}: {emb_path}")
+                    emb = np.load(emb_path)["embedding"]
+                    embs.append(emb)
+                semantic_embeddings = np.stack(embs, axis=0)
+                print(f"Loaded semantic embeddings shape: {semantic_embeddings.shape}")
+
+            predictions = solver.run_predictions(image_names_subset, model, args.max_loops, semantic_embeddings=semantic_embeddings)
 
             data.append(predictions["intrinsic"][:,0,0])
 
@@ -109,13 +132,35 @@ def main():
     print("Total number of submaps in map", solver.map.get_num_submaps())
     print("Total number of loop closures in map", solver.graph.get_num_loops())
 
-    if not args.vis_map:
+    # Optional global alignment to COLMAP GT camera centers (sets real-world scale).
+    # This should be done after pose-graph optimization and homography updates, but before saving/voxelizing.
+    if args.colmap_images_txt is not None:
+        print(f"Aligning map to COLMAP poses: {args.colmap_images_txt}")
+        solver.map.align_scale_to_colmap(args.colmap_images_txt, with_scale=not args.align_no_scale)
+
+    if not args.vis_map and not args.get_voxel:
         # just show the map after all submaps have been processed
+        print("Updating all submap visualizations...")
         solver.update_all_submap_vis()
+
+    # Build + (optionally) save + visualize the global semantic voxel map
+    if args.get_voxel:
+        print("Build and visualize semantic voxel map...")
+        if args.semantic_emb_dir is None:
+            raise ValueError("--get_voxel requires --semantic_emb_dir so semantic embeddings are available.")
+        print(f"Building semantic voxel map with voxel size {args.voxel_size}...")
+        semantic_voxel_map = solver.map.build_semantic_voxel_map(voxel_size=args.voxel_size)
+        if args.voxel_save_dir is not None:
+            semantic_voxel_map.save_to_directory(args.voxel_save_dir)
+            print(f"Saved semantic voxel map to {args.voxel_save_dir}")
+        # Visualize in a separate viser server
+        print(f"Visualizing semantic voxel map on port {args.voxel_port}...")
+        semantic_voxel_map.visualize(port=args.voxel_port, point_size=args.voxel_point_size,
+                                     render_mode="cubes", color_mode="pca", wireframe=False, opacity=0.5)
 
     # Save point cloud if requested
     if args.save_pointcloud:
-        print(f"Saving point cloud to {args.save_pointcloud}...")
+        print(f"Saving point cloud to {args.save_pointcloud} result.pcd...")
         os.makedirs(args.save_pointcloud, exist_ok=True)
         file_name = os.path.join(args.save_pointcloud, "result.pcd")
         solver.map.write_points_to_file(file_name)

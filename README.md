@@ -1,23 +1,53 @@
-<div align="center">
-    <h1>VGGT-SLAM</h1>
-    <a href="https://arxiv.org/abs/2505.12549"><img src="https://img.shields.io/badge/arXiv-b33737?logo=arXiv" /></a>
-    <!-- <a href=''><img src='https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Demo-blue'></a> -->
-    <br />
-    <br />
-  <br />
-  <br />
-  <p align="center"><img src="assets/vggt_slam_demo.gif" alt="VGGT-SLAM" width="95%"/></p>
-  <p><strong><em>VGGT-SLAM: Dense RGB SLAM Optimized on the SL(4) Manifold</em></strong></p>
+# VGGT SLAM + Semantic
 
-  <p align="center">
-    <a href="https://dominic101.github.io/DominicMaggio/"><strong>Dominic Maggio</strong></a>
-    ·
-    <a href="https://limhyungtae.github.io/hyungtae-lim/"><strong>Hyungtae Lim</strong></a>
-    ·
-    <a href="https://lucacarlone.mit.edu/"><strong>Luca Carlone</strong></a>
-  </p>
+0. get semantic embedding by using SAM and CLIP
+```bash
+cd ../sam2/
+source .venv/bin/activate
+cd ../VGGT-SLAM/vggt_slam
+python semantic_embedder.py \
+  --image_folder /path/to/images \
+  --output_folder /path/to/folder_for_samclip_embedding_per_image \
+  --ext .png \
+  --overwrite
+```
 
-</div>
+1. run VGGT SLAM and build voxels in the same time
+```bash
+python main.py \
+  --image_folder ../metacam/8thfloor/8thfloor_small_static0/images \
+  --semantic_emb_dir samclip/8thfloor_small_static0/ \
+  --get_voxel \
+  --voxel_save_dir metacam_result/8thfloor_small_static0_scaled/ \
+  --save_pointcloud metacam_result/8thfloor_small_static0_scaled/
+```
+
+2. [optinal] visualize the SAVED voxels and the point clouds together
+To visualize the voxel side-by-side with the point cloud:
+```bash
+python visualize_results.py \
+  --pcd_path /path/to/result.pcd \
+  --voxel_dir /path/to/voxel_dir \
+  --voxel_render_mode cubes \
+  --side_by_side
+```
+To visualize the voxels and the point clouds in two separate servers
+```bash
+python visualize_results.py \
+  --pcd_path /path/to/result.pcd \
+  --port 8080 \
+  --voxel_npz /path/to/semantic_voxels.npz \
+  --voxel_port 8081
+```
+
+3. query the voxel with text prompt, visualize the voxels and retrieve the images
+```bash
+python vggt_slam/query_voxelmap.py \
+  --voxel_map_dir metacam_result/8thfloor_small_static0/ \
+  --query_prompt "carrot" \
+  --output_dir query_voxel_results \
+  --image_dir ../metacam/8thfloor/8thfloor_small_static0/images
+```
 
 ---
 

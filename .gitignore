@@ -170,3 +170,7 @@ dmypy.json
 **/tmp/
 **/outputs/skyseg.onnx
 skyseg.onnx
+
+samclip/
+metacam_results/
+query_voxel_results/

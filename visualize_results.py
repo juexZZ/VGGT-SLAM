@@ -16,6 +16,7 @@ from typing import Optional, List, Tuple
 import viser
 import viser.transforms as viser_tf
 from vggt_slam.solver import Viewer
+from vggt_slam.semantic_voxel import SemanticVoxel, SemanticVoxelMap
 
 
 def load_point_cloud(pcd_path: str) -> Tuple[np.ndarray, np.ndarray]:
@@ -162,6 +163,12 @@ def visualize_results(
     vis_stride: int = 1,
     vis_point_size: float = 0.003,
     port: int = 8080,
+    voxel_dir: Optional[str] = None,
+    voxel_port: Optional[int] = None,
+    voxel_render_mode: str = "points",  # points|cubes
+    voxel_color_mode: str = "pca",      # pca|first3|ones|query (see SemanticVoxelMap.visualize)
+    voxel_max_voxels: int = 20000,
+    side_by_side: bool = False,
 ):
     """
     Visualize saved VGGT-SLAM results.
@@ -187,19 +194,97 @@ def visualize_results(
         colors = colors[::vis_stride]
         print(f"Downsampled to {len(points)} points (stride={vis_stride})")
     
-    # Initialize viewer
+    # Initialize viewer (for point cloud / poses)
     print(f"Starting viser server on port {port}...")
     viewer = Viewer(port=port)
+    
+    # get 0.5 to 99.5 percentile of points along each axis, then find the max and min
+    bounds = np.percentile(points[:, :3], [0.5, 99.5], axis=0)
+    lo_xyz = bounds[0]
+    hi_xyz = bounds[1]
+    print(f"Point cloud bounds [0.5, 99.5] percentile: {lo_xyz}, {hi_xyz}")
+    # visualize the point cloud in this range
+    in_range_mask = (points[:, :3] >= lo_xyz) & (points[:, :3] <= hi_xyz)
+    in_range_mask = in_range_mask.sum(axis=1) > 2
+    # breakpoint()
+    in_range_points = points[in_range_mask]
+    in_range_colors = colors[in_range_mask]
     
     # Add point cloud
     print("Adding point cloud to visualization...")
     viewer.server.scene.add_point_cloud(
         name="pointcloud",
-        points=points,
-        colors=colors,
+        points=in_range_points,
+        colors=in_range_colors,
         point_size=vis_point_size,
         point_shape="circle",
     )
+
+    # Optionally load + visualize semantic voxel map.
+    # We support either:
+    # - voxel_dir: directory containing semantic_voxels.npz + frame_names.json
+    # - voxel_npz: path to semantic_voxels.npz only
+    voxel_map = None
+    if voxel_dir is not None:
+        print(f"Loading semantic voxel map from directory: {voxel_dir}")
+        voxel_map = SemanticVoxelMap.load_from_directory(voxel_dir)
+
+    if voxel_map is not None:
+        voxel_points = voxel_map.get_centers_world().astype(np.float32)
+        voxel_feats = voxel_map.get_features().astype(np.float32)
+        n_vox_total = voxel_points.shape[0]
+        if voxel_max_voxels is not None and n_vox_total > voxel_max_voxels:
+            print(f"Subsampling to {voxel_max_voxels} voxels out of {n_vox_total} for visualization...")
+            idx = np.random.choice(n_vox_total, size=voxel_max_voxels, replace=False)
+            voxel_points = voxel_points[idx]
+            voxel_feats = voxel_feats[idx]
+
+        # Side-by-side: translate voxels along +X so they don't overlap the point cloud visually.
+        if side_by_side and points.shape[0] > 0:
+            dx = float(hi_xyz[0] - lo_xyz[0] + 1e-3)
+            voxel_points = voxel_points + np.array([dx, 0.0, 0.0], dtype=np.float32)
+            print(f"Offsetting voxel map by +X={dx:.3f} for side-by-side view.")
+
+        # Choose which server to render on.
+        voxel_viewer = viewer
+        if voxel_port is not None and voxel_port != port:
+            print(f"Starting second viser server for voxelmap on port {voxel_port}...")
+            voxel_viewer = Viewer(port=voxel_port)
+
+        # Colors from features (reuse SemanticVoxelMap helper)
+        if voxel_color_mode == "pca":
+            voxel_colors = voxel_map._features_to_rgb(voxel_feats)  # type: ignore[attr-defined]
+        elif voxel_color_mode == "first3":
+            voxel_colors = voxel_map._features_to_rgb(voxel_feats[:, :3])  # type: ignore[attr-defined]
+        elif voxel_color_mode == "ones":
+            voxel_colors = np.ones((voxel_points.shape[0], 3), dtype=np.float32)
+        else:
+            # fallback to pca for custom modes handled elsewhere
+            voxel_colors = voxel_map._features_to_rgb(voxel_feats)  # type: ignore[attr-defined]
+
+        print(f"Visualizing voxel map ({voxel_points.shape[0]} voxels) as {voxel_render_mode}...")
+        if voxel_render_mode == "points":
+            voxel_viewer.server.scene.add_point_cloud(
+                name="semantic_voxels",
+                points=voxel_points,
+                colors=voxel_colors,
+                point_size=0.01,
+                point_shape="circle",
+            )
+        elif voxel_render_mode == "cubes":
+            dims = (float(voxel_map.get_voxel_size()), float(voxel_map.get_voxel_size()), float(voxel_map.get_voxel_size()))
+            for i in range(voxel_points.shape[0]):
+                c = voxel_colors[i]
+                voxel_viewer.server.scene.add_box(
+                    name=f"semantic_voxels/voxel_{i}",
+                    position=(float(voxel_points[i, 0]), float(voxel_points[i, 1]), float(voxel_points[i, 2])),
+                    dimensions=dims,
+                    color=(float(c[0]), float(c[1]), float(c[2])),
+                    # wireframe=True,
+                    opacity=0.5
+                )
+        else:
+            raise ValueError(f"Unknown voxel_render_mode={voxel_render_mode}")
     
     # Load and visualize poses if provided
     if poses_path is not None:
@@ -245,7 +330,9 @@ def visualize_results(
     
     print("\n" + "="*60)
     print("Visualization ready!")
-    print(f"Open your browser to: http://localhost:{port}")
+    print(f"Pointcloud viewer: http://localhost:{port}")
+    if voxel_map is not None and voxel_port is not None and voxel_port != port:
+        print(f"Voxelmap viewer:  http://localhost:{voxel_port}")
     print("="*60)
     print("Press Enter to exit...")
     try:
@@ -294,6 +381,43 @@ def main():
         default=8080,
         help="Port for viser server"
     )
+    parser.add_argument(
+        "--voxel_dir",
+        type=str,
+        default=None,
+        help="Optional directory containing semantic voxel map (semantic_voxels.npz + frame_names.json)"
+    )
+    parser.add_argument(
+        "--voxel_port",
+        type=int,
+        default=None,
+        help="Optional second port for voxel visualization. If omitted, voxels are drawn into the main server."
+    )
+    parser.add_argument(
+        "--voxel_render_mode",
+        type=str,
+        default="points",
+        choices=["points", "cubes"],
+        help="Render voxels as point cloud or cubes."
+    )
+    parser.add_argument(
+        "--voxel_color_mode",
+        type=str,
+        default="pca",
+        choices=["pca", "first3", "ones"],
+        help="How to color voxels from features."
+    )
+    parser.add_argument(
+        "--voxel_max_voxels",
+        type=int,
+        default=20000,
+        help="Max number of voxels to draw (subsample for performance)."
+    )
+    parser.add_argument(
+        "--side_by_side",
+        action="store_true",
+        help="Translate voxelmap along +X so pointcloud and voxels appear side-by-side."
+    )
     
     args = parser.parse_args()
     
@@ -304,6 +428,12 @@ def main():
         vis_stride=args.vis_stride,
         vis_point_size=args.vis_point_size,
         port=args.port,
+        voxel_dir=args.voxel_dir,
+        voxel_port=args.voxel_port,
+        voxel_render_mode=args.voxel_render_mode,
+        voxel_color_mode=args.voxel_color_mode,
+        voxel_max_voxels=args.voxel_max_voxels,
+        side_by_side=args.side_by_side,
     )
 
 
