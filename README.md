@@ -21,6 +21,11 @@ python main.py \
   --voxel_save_dir metacam_result/8thfloor_small_static0_scaled/ \
   --save_pointcloud metacam_result/8thfloor_small_static0_scaled/
 ```
+But if you don't want the voxel to be built, just run the original VGGT SLAM
+```bash
+python main.py \
+  --image_folder ../metacam/8thfloor_v2/8thfloor_static1
+```
 
 2. [optinal] visualize the SAVED voxels and the point clouds together
 To visualize the voxel side-by-side with the point cloud:
@@ -48,6 +53,24 @@ python vggt_slam/query_voxelmap.py \
   --output_dir query_voxel_results \
   --image_dir ../metacam/8thfloor/8thfloor_small_static0/images
 ```
+
+---
+
+## MetaCam: undistort raw fisheye images (left/right)
+
+This repo includes a small helper script that **only** undistorts MetaCam images (ignores extrinsics).
+
+```bash
+python3 scripts/undistort_metacam_image.py \
+  --input_dir /path/to/metacam/images_or_folder \
+  --output_dir /path/to/output/undistorted \
+  --out_size 1600 \
+  --fov_deg 90
+```
+
+Input folder can be either:
+- `.../left/*.jpg` and `.../right/*.jpg`, or
+- `.../left_*.jpg` and `.../right_*.jpg` in a single folder.
 
 ---
 
