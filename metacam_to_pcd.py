@@ -5,6 +5,7 @@ import viser
 import time
 from pathlib import Path
 import open3d as o3d
+from typing import Optional, List, Tuple
 
 # Coordinate system transformation matrices
 GLOBAL_ROT = np.array([
@@ -19,6 +20,26 @@ GLOBAL_TRANS = np.array([
     [1.0, 0.0, 0.0, 0.0],
     [0.0, 0.0, 0.0, 1.0]
 ])
+
+def load_point_cloud(pcd_path: str) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Load point cloud from .pcd file.
+    
+    Returns:
+        points: (N, 3) array of point positions
+        colors: (N, 3) array of point colors (0-255 uint8)
+    """
+    pcd = o3d.io.read_point_cloud(pcd_path)
+    points = np.asarray(pcd.points)
+    colors = np.asarray(pcd.colors)
+    
+    # Convert colors to uint8 if they're in [0, 1] range
+    if colors.max() <= 1.0:
+        colors = (colors * 255).astype(np.uint8)
+    else:
+        colors = colors.astype(np.uint8)
+    
+    return points, colors
 
 def apply_T_world(T: np.ndarray, pts_xyz: np.ndarray) -> np.ndarray:
     """Apply a 4x4 transform to Nx3 points."""
@@ -50,7 +71,15 @@ def _extract_las_colors_uint8(las) -> np.ndarray | None:
     b = np.clip((b_raw * scale).astype(np.uint8), 0, 255)
     return np.stack([r, g, b], axis=-1)
 
-def process_point_cloud(las_path, output_pcd_path):
+def process_point_cloud(las_path, output_pcd_path, visualize=True):
+    # 0. check if the pcd path already exists
+    if Path(output_pcd_path).exists():
+        print(f"pcd file {output_pcd_path} already exists.")
+        if visualize:
+            print("Still do visualization")
+            points, colors = load_point_cloud(output_pcd_path)
+            visualize_pcd(points, colors, vis_stride=10, port=8964)
+        return
     # 1. Read LAS file using laspy
     print(f"Reading {las_path}...")
     las = laspy.read(las_path)
@@ -90,20 +119,28 @@ def process_point_cloud(las_path, output_pcd_path):
         colors = np.stack([intensity] * 3, axis=-1)
     print(f"Colors shape: {colors.shape}")
     
+    # 2. visualize the pcd with an optional subsample
+    if visualize:
+        visualize_pcd(points, colors, vis_stride=10, port=8964)
+
+    # 3. Save as PCD (Simple Header Format)
+    save_pcd(output_pcd_path, points, colors)
+    print(f"Saved PCD to {output_pcd_path}")
+
+def visualize_pcd(points, colors, vis_stride=10, port=8080):
     # visualize with a stride
-    stride = 10
-    subsampled_points = points[::stride]
-    subsampled_colors = colors[::stride]
-    print(f"Downsampled to {len(subsampled_points)} points (stride={stride})")
+    subsampled_points = points[::vis_stride]
+    subsampled_colors = colors[::vis_stride]
+    print(f"Downsampled to {len(subsampled_points)} points (stride={vis_stride})")
     
     # 2. Visualize with Viser
-    server = viser.ViserServer()
+    server = viser.ViserServer(port=port)
     
     # # Center the cloud for better visualization in viser
     # offset = np.mean(points, axis=0)
     # centered_points = points - offset
     
-    print(f"Visualizing at http://localhost:8080")
+    print(f"Visualizing at http://localhost:{port}")
     server.scene.add_point_cloud(
         name="las_cloud",
         points=subsampled_points,
@@ -112,17 +149,13 @@ def process_point_cloud(las_path, output_pcd_path):
         point_size=0.01,
     )
 
-    # 3. Save as PCD (Simple Header Format)
-    save_pcd(output_pcd_path, points, colors)
-    print(f"Saved PCD to {output_pcd_path}")
-
     # Keep server alive
     try:
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
         print("Server stopped.")
-
+    
 def save_pcd(path, points, colors=None):
     """Saves a simple ASCII PCD file."""
     num_points = points.shape[0]
@@ -251,18 +284,19 @@ def write_ply_file(ply_path, points, r=None, g=None, b=None):
 
 if __name__ == "__main__":
     # Replace with your actual file path
-    input_las = "../metacam/8thfloor/8thfloor_small_static0/colorized.las" 
-    output_pcd = "../metacam/8thfloor/8thfloor_small_static0/colorized.pcd"
-    output_ply = "../metacam/8thfloor/8thfloor_small_static0/colorized_z_up.ply"
+    scene_folder = Path("../metacam/data_v3/8thfloor_small_5times")
+    input_las = scene_folder / "colorized.las" 
+    output_pcd = scene_folder / "colorized.pcd"
+    output_ply = scene_folder / "colorized_z_up.ply"
     
-    convert_las_to_ply(
-        scene_path=Path(input_las).parent,
-        las_name=Path(input_las).name,
-        ply_name=Path(output_ply).name,
-        transform="zup",
-    )
+    # convert_las_to_ply(
+    #     scene_path=Path(input_las).parent,
+    #     las_name=Path(input_las).name,
+    #     ply_name=Path(output_ply).name,
+    #     transform="zup",
+    # )
     
-    # if Path(input_las).exists():
-    #     process_point_cloud(input_las, output_pcd)
-    # else:
-    #     print(f"File {input_las} not found.")
+    if Path(input_las).exists():
+        process_point_cloud(input_las, output_pcd, visualize=True)
+    else:
+        print(f"File {input_las} not found.")

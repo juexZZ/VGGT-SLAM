@@ -24,7 +24,8 @@ python main.py \
 But if you don't want the voxel to be built, just run the original VGGT SLAM
 ```bash
 python main.py \
-  --image_folder ../metacam/8thfloor_v2/8thfloor_static1
+  --image_folder ../metacam/8thfloor_v2/8thfloor_static1 \
+  --save_pointcloud ./metacam_result/8thfloor_small_5times
 ```
 
 2. [optinal] visualize the SAVED voxels and the point clouds together
