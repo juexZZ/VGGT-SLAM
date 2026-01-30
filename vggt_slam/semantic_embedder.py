@@ -30,13 +30,15 @@ import numpy as np
 import cv2
 from sam2.build_sam import build_sam2
 from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
-from transformers import CLIPProcessor, CLIPModel
+from transformers import CLIPProcessor, CLIPModel, SiglipModel, SiglipProcessor
 from PIL import Image
 import os
 from pathlib import Path
 import argparse
 from typing import Iterable, Optional, Sequence, Tuple
 from tqdm import tqdm
+import multiprocessing as mp
+import sys
 
 class SAMCLIPEmbedder:
     def __init__(
@@ -44,10 +46,12 @@ class SAMCLIPEmbedder:
         sam_checkpoint: str = "/local_data/jz4725/sam2/checkpoints/sam2.1_hiera_base_plus.pt",
         model_cfg: str = "configs/sam2.1/sam2.1_hiera_b+.yaml",
         clip_model_name: str = "openai/clip-vit-base-patch32",
+        bbox_expand_pct: float = 0.0,
         device: Optional[str] = None,
     ):
         #SAM Initialization
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.clip_model_name = clip_model_name
 
         self.sam = build_sam2(model_cfg, sam_checkpoint)
         self.sam.to(device=self.device)
@@ -62,9 +66,14 @@ class SAMCLIPEmbedder:
             min_mask_region_area=100,  # Requires open-cv to run post-processing
         )
 
-        #CLIP Initialization
-        self.clip_model = CLIPModel.from_pretrained(clip_model_name)
-        self.processor = CLIPProcessor.from_pretrained(clip_model_name, use_fast=True)
+        # CLIP/SigLIP Initialization
+        self.is_siglip = "siglip" in clip_model_name.lower()
+        if self.is_siglip:
+            self.clip_model = SiglipModel.from_pretrained(clip_model_name)
+            self.processor = SiglipProcessor.from_pretrained(clip_model_name, use_fast=True)
+        else:
+            self.clip_model = CLIPModel.from_pretrained(clip_model_name)
+            self.processor = CLIPProcessor.from_pretrained(clip_model_name, use_fast=True)
         
         self.clip_model.to(self.device)
         self.clip_model.eval()
@@ -75,6 +84,43 @@ class SAMCLIPEmbedder:
         self.masks = []
         self.seperated_masks = []
         self.image_embeddings = []
+        self.bbox_expand_pct = self._normalize_bbox_expand_pct(bbox_expand_pct)
+        self.embedding_dim = self._infer_embedding_dim()
+        print(f"embedding_dim: {self.embedding_dim}")
+
+    def _infer_embedding_dim(self) -> int:
+        config = getattr(self.clip_model, "config", None)
+        for key in ("projection_dim", "hidden_size", "embed_dim"):
+            value = getattr(config, key, None)
+            if isinstance(value, int) and value > 0:
+                return value
+        return 512
+
+    def _normalize_bbox_expand_pct(self, bbox_expand_pct: float) -> float:
+        if bbox_expand_pct < 0:
+            raise ValueError("bbox_expand_pct must be >= 0.")
+        return float(bbox_expand_pct)
+
+    def _expand_bbox(
+        self,
+        bbox: Sequence[float],
+        image_hw: Tuple[int, int],
+    ) -> Tuple[int, int, int, int]:
+        x, y, w, h = [float(v) for v in bbox]
+        if self.bbox_expand_pct <= 0:
+            return int(x), int(y), int(w), int(h)
+        expand_w = w * self.bbox_expand_pct
+        expand_h = h * self.bbox_expand_pct
+        new_x = x - expand_w / 2.0
+        new_y = y - expand_h / 2.0
+        new_w = w + expand_w
+        new_h = h + expand_h
+        height, width = image_hw
+        x0 = max(0, int(np.floor(new_x)))
+        y0 = max(0, int(np.floor(new_y)))
+        x1 = min(width, int(np.ceil(new_x + new_w)))
+        y1 = min(height, int(np.ceil(new_y + new_h)))
+        return x0, y0, max(0, x1 - x0), max(0, y1 - y0)
 
     def set_image(self, image_rgb: np.ndarray) -> None:
         if image_rgb.ndim != 3 or image_rgb.shape[2] != 3:
@@ -97,7 +143,7 @@ class SAMCLIPEmbedder:
             black_background_image[segmentation] = self.image[segmentation] #type: ignore
             
             # 3. Crop the image using the bounding box
-            x, y, w, h = [int(v) for v in bbox]
+            x, y, w, h = self._expand_bbox(bbox, self.image.shape[:2])
             x = max(0, x); y = max(0, y)
             w = max(0, w); h = max(0, h)
             cropped_object = black_background_image[y:y + h, x:x + w]
@@ -176,7 +222,11 @@ class SAMCLIPEmbedder:
     
         # 3. Generate the embedding (feature vector)
         with torch.no_grad():
-            image_features = self.clip_model.get_image_features(pixel_values=inputs.pixel_values) #type: ignore
+            if hasattr(self.clip_model, "get_image_features"):
+                image_features = self.clip_model.get_image_features(pixel_values=inputs.pixel_values) #type: ignore
+            else:
+                outputs = self.clip_model(**inputs)
+                image_features = outputs.image_embeds  #type: ignore
     
         # 4. Normalize the embedding (crucial for accurate cosine similarity)
         # The image_features will be of shape (1, embedding_dimension), e.g., (1, 768)
@@ -201,7 +251,11 @@ class SAMCLIPEmbedder:
     
         # 2. Generate the embedding (feature vector)
         with torch.no_grad():
-            text_features = self.clip_model.get_text_features(**inputs) #type: ignore
+            if hasattr(self.clip_model, "get_text_features"):
+                text_features = self.clip_model.get_text_features(**inputs) #type: ignore
+            else:
+                outputs = self.clip_model(**inputs)
+                text_features = outputs.text_embeds  #type: ignore
     
         # 3. Normalize the embedding (crucial for accurate cosine similarity)
         # The text_features will be of shape (1, embedding_dimension), e.g., (1, 768)
@@ -252,7 +306,11 @@ class SAMCLIPEmbedder:
         # Get text embedding
         inputs = self.processor(text=text_query, return_tensors="pt").to(self.device) #type: ignore
         with torch.no_grad():
-            text_features = self.clip_model.get_text_features(**inputs) #type: ignore
+            if hasattr(self.clip_model, "get_text_features"):
+                text_features = self.clip_model.get_text_features(**inputs) #type: ignore
+            else:
+                outputs = self.clip_model(**inputs)
+                text_features = outputs.text_embeds  #type: ignore
         text_embedding = text_features / text_features.norm(p=2, dim=-1, keepdim=True)
 
         # Compute cosine similarities
@@ -317,7 +375,7 @@ class SAMCLIPEmbedder:
         if embedded is None:
             # Fall back to zeros (no masks) so downstream code can still load shape-consistent data.
             h, w = img_rgb.shape[:2]
-            embedded = np.zeros((h, w, 512), dtype=np.float32)  # 512 for ViT-B/32; overridden if masks exist
+            embedded = np.zeros((h, w, self.embedding_dim), dtype=np.float32)
         return embedded.astype(np.float32)
 
     def save_embedding_npz(self, embedding: np.ndarray, output_path: str, image_path: Optional[str] = None) -> None:
@@ -334,12 +392,40 @@ class SAMCLIPEmbedder:
         else:
             np.savez_compressed(output_path, embedding=embedding, image_path=str(image_path))
 
+    def save_masks_visualization(self, output_path: str, alpha: float = 0.5) -> None:
+        """
+        Save a visualization of SAM2 masks overlaid on the current image.
+        """
+        if self.image is None:
+            raise ValueError("Image not set. Call set_image() before saving mask visualization.")
+        if not self.masks:
+            # No masks: just save the original image for debugging consistency.
+            img_bgr = cv2.cvtColor(self.image, cv2.COLOR_RGB2BGR)
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            cv2.imwrite(output_path, img_bgr)
+            return
+
+        rng = np.random.RandomState(0)
+        overlay = self.image.astype(np.float32).copy()
+        base = self.image.astype(np.float32)
+
+        for mask_data in self.masks:
+            segmentation_mask = mask_data["segmentation"]
+            color = rng.randint(0, 256, size=(3,), dtype=np.uint8).astype(np.float32)
+            overlay[segmentation_mask] = (1.0 - alpha) * base[segmentation_mask] + alpha * color
+
+        vis_rgb = np.clip(overlay, 0, 255).astype(np.uint8)
+        vis_bgr = cv2.cvtColor(vis_rgb, cv2.COLOR_RGB2BGR)
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        cv2.imwrite(output_path, vis_bgr)
+
     def embed_folder_to_npz(
         self,
         image_folder: str,
         output_folder: str,
         exts: Sequence[str] = (".jpg", ".jpeg", ".png"),
         overwrite: bool = False,
+        gpu_ids: Optional[Sequence[int]] = None,
     ) -> None:
         """
         Embed all images in `image_folder` and write one NPZ per image to `output_folder`.
@@ -353,6 +439,31 @@ class SAMCLIPEmbedder:
         if len(image_paths) == 0:
             raise RuntimeError(f"No images found in {image_folder} with extensions {exts}")
 
+        if gpu_ids and len(gpu_ids) > 1:
+            chunks = _chunk_list(image_paths, len(gpu_ids))
+            ctx = mp.get_context("spawn")
+            processes = []
+            for gpu_id, chunk in zip(gpu_ids, chunks):
+                if not chunk:
+                    continue
+                proc = ctx.Process(
+                    target=_embed_worker,
+                    args=(
+                        gpu_id,
+                        [str(p) for p in chunk],
+                        str(output_folder_p),
+                        tuple(exts),
+                        overwrite,
+                        self.clip_model_name,
+                        self.bbox_expand_pct,
+                    ),
+                )
+                proc.start()
+                processes.append(proc)
+            for proc in processes:
+                proc.join()
+            return
+
         for p in tqdm(image_paths):
             out_path = output_folder_p / f"{p.stem}.npz"
             if out_path.exists() and not overwrite:
@@ -361,7 +472,98 @@ class SAMCLIPEmbedder:
             print(f"[embed] {p.name}")
             emb = self.embed_single_image(str(p), target_hw=(518, 518))
             self.save_embedding_npz(emb, str(out_path), image_path=str(p))
+            mask_viz_path = output_folder_p / "mask_viz" / f"{p.stem}_masks.png"
+            self.save_masks_visualization(str(mask_viz_path))
             print(f"[saved] {out_path} shape={emb.shape} dtype={emb.dtype}")
+
+
+def _chunk_list(items: Sequence[Path], num_chunks: int) -> list[list[Path]]:
+    if num_chunks <= 0:
+        return [list(items)]
+    chunks: list[list[Path]] = [[] for _ in range(num_chunks)]
+    for idx, item in enumerate(items):
+        chunks[idx % num_chunks].append(item)
+    return chunks
+
+
+def _embed_worker(
+    gpu_id: int,
+    image_paths: Sequence[str],
+    output_folder: str,
+    exts: Sequence[str],
+    overwrite: bool,
+    clip_model_name: str,
+    bbox_expand_pct: float,
+) -> None:
+    if torch.cuda.is_available():
+        torch.cuda.set_device(gpu_id)
+        device = f"cuda:{gpu_id}"
+    else:
+        device = "cpu"
+    embedder = SAMCLIPEmbedder(
+        clip_model_name=clip_model_name,
+        bbox_expand_pct=bbox_expand_pct,
+        device=device,
+    )
+    output_folder_p = Path(output_folder)
+    output_folder_p.mkdir(parents=True, exist_ok=True)
+    exts_lower = [e.lower() for e in exts]
+    for i, image_path in enumerate(image_paths):
+        p = Path(image_path)
+        if p.suffix.lower() not in exts_lower:
+            continue
+        out_path = output_folder_p / f"{p.stem}.npz"
+        if out_path.exists() and not overwrite:
+            print(f"[gpu {gpu_id}] [skip] {p.name} -> {out_path}")
+            continue
+        print(f"[gpu {gpu_id}] [embed] {p.name}")
+        emb = embedder.embed_single_image(str(p), target_hw=(518, 518))
+        embedder.save_embedding_npz(emb, str(out_path), image_path=str(p))
+        mask_viz_path = output_folder_p / "mask_viz" / f"{p.stem}_masks.png"
+        embedder.save_masks_visualization(str(mask_viz_path))
+        print(f"[gpu {gpu_id}] [saved] {out_path} shape={emb.shape} dtype={emb.dtype}, its progress is {i+1}/{len(image_paths)}")
+
+
+def _embed_multi_gpu(
+    image_folder: str,
+    output_folder: str,
+    exts: Sequence[str],
+    overwrite: bool,
+    gpu_ids: Sequence[int],
+    clip_model_name: str,
+    bbox_expand_pct: float,
+) -> None:
+    image_folder_p = Path(image_folder)
+    output_folder_p = Path(output_folder)
+    output_folder_p.mkdir(parents=True, exist_ok=True)
+
+    exts_l = tuple(e.lower() for e in exts)
+    image_paths = sorted([p for p in image_folder_p.glob("*") if p.suffix.lower() in exts_l])
+    if len(image_paths) == 0:
+        raise RuntimeError(f"No images found in {image_folder} with extensions {exts}")
+
+    chunks = _chunk_list(image_paths, len(gpu_ids))
+    ctx = mp.get_context("spawn")
+    processes = []
+    for gpu_id, chunk in zip(gpu_ids, chunks):
+        if not chunk:
+            continue
+        proc = ctx.Process(
+            target=_embed_worker,
+            args=(
+                gpu_id,
+                [str(p) for p in chunk],
+                str(output_folder_p),
+                tuple(exts),
+                overwrite,
+                clip_model_name,
+                bbox_expand_pct,
+            ),
+        )
+        proc.start()
+        processes.append(proc)
+    for proc in processes:
+        proc.join()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate dense semantic embeddings for a folder of images (SAM2 + CLIP).")
@@ -369,9 +571,49 @@ if __name__ == "__main__":
     parser.add_argument("--output_folder", type=str, required=True, help="Folder to write per-image .npz embeddings.")
     parser.add_argument("--ext", type=str, nargs="*", default=[".jpg", ".jpeg", ".png"], help="Allowed extensions.")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing .npz files.")
+    parser.add_argument(
+        "--clip_model_name",
+        type=str,
+        default="openai/clip-vit-base-patch32",
+        help="HF model name for CLIP/SigLIP (e.g., google/siglip-so400m-patch14-384).",
+    )
+    parser.add_argument(
+        "--bbox_expand_pct",
+        type=float,
+        default=0.0,
+        help="Expand bbox by this pct (0.1=10%, 0.2=20%).",
+    )
+    parser.add_argument(
+        "--gpu_ids",
+        type=int,
+        nargs="*",
+        default=None,
+        help="GPU ids for parallel embedding (e.g., 0 1 2).",
+    )
     args = parser.parse_args()
 
-    embedder = SAMCLIPEmbedder()
+    if args.gpu_ids and len(args.gpu_ids) > 1:
+        _embed_multi_gpu(
+            args.image_folder,
+            args.output_folder,
+            exts=tuple(args.ext),
+            overwrite=args.overwrite,
+            gpu_ids=args.gpu_ids,
+            clip_model_name=args.clip_model_name,
+            bbox_expand_pct=args.bbox_expand_pct,
+        )
+        sys.exit(0)
+
+    device = None
+    if args.gpu_ids and len(args.gpu_ids) == 1 and torch.cuda.is_available():
+        torch.cuda.set_device(args.gpu_ids[0])
+        device = f"cuda:{args.gpu_ids[0]}"
+
+    embedder = SAMCLIPEmbedder(
+        clip_model_name=args.clip_model_name,
+        bbox_expand_pct=args.bbox_expand_pct,
+        device=device,
+    )
     
     # # demo verify sam and feature quality
     # img_path = "/local_data/jz4725/sam2/notebooks/images/groceries.jpg"
@@ -389,5 +631,11 @@ if __name__ == "__main__":
     # plt.close()
     
     # embed folder to npz
-    embedder.embed_folder_to_npz(args.image_folder, args.output_folder, exts=tuple(args.ext), overwrite=args.overwrite)
+    embedder.embed_folder_to_npz(
+        args.image_folder,
+        args.output_folder,
+        exts=tuple(args.ext),
+        overwrite=args.overwrite,
+        gpu_ids=args.gpu_ids,
+    )
     

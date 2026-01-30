@@ -172,5 +172,6 @@ dmypy.json
 skyseg.onnx
 
 samclip/
-metacam_results/
+metacam_result/
 query_voxel_results/
+results/

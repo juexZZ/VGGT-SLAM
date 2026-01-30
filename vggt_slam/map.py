@@ -102,6 +102,53 @@ class GraphMap:
             for frame_id, pointcloud, conf_masks in zip(frame_ids, pointclouds, conf_masks):
                 # save pcd as numpy array
                 np.savez(f"{file_name}/{frame_id}.npz", pointcloud=pointcloud, mask=conf_masks)
+
+    def save_frame_outputs(self, output_dir, ignore_loop_closure_frames=True):
+        """
+        Save per-frame point map (world), extrinsics (world), and intrinsics.
+        Outputs: {output_dir}/{frame_id}.npz
+        """
+        os.makedirs(output_dir, exist_ok=True)
+        for submap in self.ordered_submaps_by_key():
+            if submap.pointclouds is None or submap.H_world_map is None:
+                continue
+
+            end_idx = submap.pointclouds.shape[0]
+            if ignore_loop_closure_frames and (submap.last_non_loop_frame_index is not None):
+                end_idx = min(end_idx, submap.last_non_loop_frame_index + 1)
+
+            pointclouds, frame_ids, conf_masks = submap.get_points_list_in_world_frame(
+                ignore_loop_closure_frames=ignore_loop_closure_frames
+            )
+            extrinsics_world = submap.get_all_poses_world(ignore_loop_closure_frames=ignore_loop_closure_frames)
+            intrinsics = submap.vggt_intrinscs
+
+            if intrinsics is None:
+                intrinsics = [None] * len(pointclouds)
+
+            if len(pointclouds) != len(extrinsics_world):
+                print(
+                    f"Skipping submap {submap.get_id()} due to length mismatch: "
+                    f"{len(pointclouds)} point maps vs {len(extrinsics_world)} extrinsics."
+                )
+                continue
+
+            frame_names = getattr(submap, "frame_names", None)
+            for idx in range(min(end_idx, len(pointclouds))):
+                if frame_names is not None and idx < len(frame_names):
+                    stem, _ = os.path.splitext(str(frame_names[idx]))
+                    filename = f"{stem}.npz"
+                else:
+                    frame_id = frame_ids[idx] if frame_ids is not None else idx
+                    filename = f"{str(frame_id)}.npz"
+                output_path = os.path.join(output_dir, filename)
+                np.savez(
+                    output_path,
+                    point_map_world=pointclouds[idx],
+                    conf_mask=conf_masks[idx],
+                    extrinsic_world=extrinsics_world[idx],
+                    intrinsic=intrinsics[idx] if intrinsics is not None else None,
+                )
                 
 
     def write_points_to_file(self, file_name):

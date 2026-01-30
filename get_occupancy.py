@@ -374,8 +374,8 @@ def main():
     parser.add_argument("--colmap_images_txt", type=str, required=True, help="Path to COLMAP images.txt")
     parser.add_argument("--path_txt", type=str, required=True, help="Path to path.txt (one image name per line, ordered)")
 
-    parser.add_argument("--voxel_size", type=float, default=0.05, help="Occupancy cell size (meters)")
-    parser.add_argument("--ceiling_z", type=float, default=2.5, help="Exclude points above this height (meters)")
+    parser.add_argument("--voxel_size", type=float, default=0.2, help="Occupancy cell size (meters)")
+    parser.add_argument("--ceiling_z", type=float, default=1.0, help="Exclude points above this height (meters)")
     parser.add_argument("--height_thresh", type=float, default=0.2, help="If max_z-min_z > this, mark cell blocked (meters)")
     parser.add_argument("--unknown_is_free", action="store_true", help="Treat unknown cells as free (default True).")
 
@@ -508,7 +508,7 @@ def main():
         name="occupancy/points",
         points=vis_pts,
         colors=vis_colors,
-        point_size=float(args.voxel_size*0.1),
+        point_size=float(args.voxel_size*0.5),
         point_shape="rounded",
     )
 

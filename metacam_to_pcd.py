@@ -124,6 +124,7 @@ def process_point_cloud(las_path, output_pcd_path, visualize=True):
         visualize_pcd(points, colors, vis_stride=10, port=8964)
 
     # 3. Save as PCD (Simple Header Format)
+    print("saving pcd..")
     save_pcd(output_pcd_path, points, colors)
     print(f"Saved PCD to {output_pcd_path}")
 
@@ -284,7 +285,7 @@ def write_ply_file(ply_path, points, r=None, g=None, b=None):
 
 if __name__ == "__main__":
     # Replace with your actual file path
-    scene_folder = Path("../metacam/data_v3/8thfloor_small_5times")
+    scene_folder = Path("../metacam/data_v3/6metro_remove")
     input_las = scene_folder / "colorized.las" 
     output_pcd = scene_folder / "colorized.pcd"
     output_ply = scene_folder / "colorized_z_up.ply"
@@ -297,6 +298,6 @@ if __name__ == "__main__":
     # )
     
     if Path(input_las).exists():
-        process_point_cloud(input_las, output_pcd, visualize=True)
+        process_point_cloud(input_las, output_pcd, visualize=False)
     else:
         print(f"File {input_las} not found.")

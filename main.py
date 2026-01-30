@@ -32,7 +32,7 @@ parser.add_argument("--use_point_map", action="store_true", help="Use point map 
 parser.add_argument("--conf_threshold", type=float, default=25.0, help="Initial percentage of low-confidence points to filter out")
 parser.add_argument("--vis_stride", type=int, default=1, help="Stride interval in the 3D point cloud image for visualization. Try increasing (such as 4) to reduce lag in visualizing large maps.")
 parser.add_argument("--vis_point_size", type=float, default=0.003, help="Visualization point size")
-parser.add_argument("--save_pointcloud", type=str, default=None, help="Directory to save the point cloud file (e.g., output.pcd). If provided, point cloud will be saved before visualization.")
+parser.add_argument("--save_path", type=str, default=None, help="Directory to save the results (e.g., point cloud, frame outputs, etc.).")
 parser.add_argument("--keep_alive", action="store_true", help="Keep the viser server alive until manual shutdown (press Enter to exit)")
 parser.add_argument("--semantic_emb_dir", type=str, default=None, help="Directory containing per-image semantic embeddings as .npz (same stem as image filename), key 'embedding'=(H,W,d).")
 parser.add_argument("--get_voxel", action="store_true", help="Build, save, and visualize a global semantic voxel map after SLAM finishes (requires --semantic_emb_dir).")
@@ -143,28 +143,21 @@ def main():
         print("Updating all submap visualizations...")
         solver.update_all_submap_vis()
 
-    # Build + (optionally) save + visualize the global semantic voxel map
     if args.get_voxel:
-        print("Build and visualize semantic voxel map...")
-        if args.semantic_emb_dir is None:
-            raise ValueError("--get_voxel requires --semantic_emb_dir so semantic embeddings are available.")
-        print(f"Building semantic voxel map with voxel size {args.voxel_size}...")
-        semantic_voxel_map = solver.map.build_semantic_voxel_map(voxel_size=args.voxel_size)
-        if args.voxel_save_dir is not None:
-            semantic_voxel_map.save_to_directory(args.voxel_save_dir)
-            print(f"Saved semantic voxel map to {args.voxel_save_dir}")
-        # Visualize in a separate viser server
-        print(f"Visualizing semantic voxel map on port {args.voxel_port}...")
-        semantic_voxel_map.visualize(port=args.voxel_port, point_size=args.voxel_point_size,
-                                     render_mode="cubes", color_mode="pca", wireframe=False, opacity=0.5)
+        print("Skipping semantic voxel map generation in main; run voxelization offline by saving per frame resultsinstead.")
 
     # Save point cloud if requested
-    if args.save_pointcloud:
-        print(f"Saving point cloud to {args.save_pointcloud} result.pcd...")
-        os.makedirs(args.save_pointcloud, exist_ok=True)
-        file_name = os.path.join(args.save_pointcloud, "result.pcd")
+    if args.save_path:
+        print(f"Saving point cloud to {args.save_path} result.pcd...")
+        os.makedirs(args.save_path, exist_ok=True)
+        file_name = os.path.join(args.save_path, "result.pcd")
         solver.map.write_points_to_file(file_name)
         print("Point cloud saved successfully!")
+
+    # Save per-frame outputs (point map in world, extrinsics in world, intrinsics)
+    frame_output_dir = os.path.join(args.save_path, "frame_output")
+    print(f"Saving per-frame outputs to {frame_output_dir}...")
+    solver.map.save_frame_outputs(frame_output_dir, ignore_loop_closure_frames=True)
 
     if args.log_results:
         solver.map.write_poses_to_file(args.log_path)
@@ -194,7 +187,7 @@ def main():
     # Keep viser server alive if visualization is shown (or if explicitly requested)
     # Visualization is shown if --vis_map is set or if final map is displayed (when not using --vis_map)
     visualization_shown = args.vis_map or (not args.vis_map and solver.map.get_num_submaps() > 0)
-    should_keep_alive = args.keep_alive or visualization_shown
+    should_keep_alive = args.keep_alive
     if should_keep_alive and not solver.gradio_mode:
         print("\nViser server is running. Press Enter to exit...")
         try:
