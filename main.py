@@ -74,7 +74,7 @@ def main():
     # Use the provided image folder path
     print(f"Loading images from {args.image_folder}...")
     image_names = [f for f in glob.glob(os.path.join(args.image_folder, "*")) 
-               if "depth" not in os.path.basename(f).lower() and "txt" not in os.path.basename(f).lower() 
+               if "depth" not in os.path.basename(f).lower() and "txt" not in os.path.basename(f).lower() and "json" not in os.path.basename(f).lower()
                and "db" not in os.path.basename(f).lower()]
 
     image_names = utils.sort_images_by_number(image_names)

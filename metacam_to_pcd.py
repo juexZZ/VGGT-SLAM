@@ -285,7 +285,7 @@ def write_ply_file(ply_path, points, r=None, g=None, b=None):
 
 if __name__ == "__main__":
     # Replace with your actual file path
-    scene_folder = Path("../metacam/data_v3/6metro_remove")
+    scene_folder = Path("../metacam/data_v3/28_metfloor")
     input_las = scene_folder / "colorized.las" 
     output_pcd = scene_folder / "colorized.pcd"
     output_ply = scene_folder / "colorized_z_up.ply"
