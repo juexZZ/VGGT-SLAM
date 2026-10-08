@@ -477,6 +477,15 @@ class Solver:
 
         for key in predictions.keys():
             if isinstance(predictions[key], torch.Tensor):
-                predictions[key] = predictions[key].cpu().numpy().squeeze(0)  # remove batch dimension and convert to numpy
+                t = predictions[key]
+                # NumPy can't directly consume torch.bfloat16 tensors.
+                if t.is_floating_point():
+                    t = t.float()
+                arr = t.cpu().numpy()
+                print("shape of", key, "is", arr.shape)
+                # Remove leading batch dimension only if it is actually a singleton.
+                if arr.ndim > 0 and arr.shape[0] == 1:
+                    arr = arr.squeeze(0)
+                predictions[key] = arr
 
         return predictions

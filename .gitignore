@@ -175,3 +175,7 @@ samclip/
 metacam_result/
 query_voxel_results/
 results/
+
+# Local experiment inputs, outputs and dependency checkouts
+/rebuttal_v1_results/
+/third_party/
