@@ -173,3 +173,6 @@ dmypy.json
 **/tmp/
 **/outputs/skyseg.onnx
 skyseg.onnx
+
+# Local experiment inputs, outputs and dependency checkouts
+/rebuttal_v2_results/

@@ -31,6 +31,7 @@ parser.add_argument("--max_loops", type=int, default=1, help="ONLY DEFAULT OF 1 
 parser.add_argument("--min_disparity", type=float, default=50, help="Minimum disparity to generate a new keyframe")
 parser.add_argument("--conf_threshold", type=float, default=25.0, help="Initial percentage of low-confidence points to filter out")
 parser.add_argument("--lc_thres", type=float, default=0.95, help="Threshold for image retrieval. Range: [0, 1.0]. Higher = more loop closures")
+parser.add_argument("--save_path", type=str, default=None, help="Directory to save result.pcd and per-frame npz outputs (point_map_world, conf_mask, extrinsic_world, intrinsic).")
 
 
 def main():
@@ -79,9 +80,10 @@ def main():
 
     # Use the provided image folder path
     print(f"Loading images from {args.image_folder}...")
-    image_names = [f for f in glob.glob(os.path.join(args.image_folder, "*")) 
-               if "depth" not in os.path.basename(f).lower() and "txt" not in os.path.basename(f).lower() 
-               and "db" not in os.path.basename(f).lower()]
+    image_exts = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
+    image_names = [f for f in glob.glob(os.path.join(args.image_folder, "*"))
+               if os.path.splitext(f)[1].lower() in image_exts
+               and "depth" not in os.path.basename(f).lower()]
 
     image_names = utils.sort_images_by_number(image_names)
     downsample_factor = 1
@@ -195,6 +197,15 @@ def main():
     if not args.vis_map:
         # just show the map after all submaps have been processed
         solver.update_all_submap_vis()
+
+    if args.save_path:
+        os.makedirs(args.save_path, exist_ok=True)
+        pcd_file = os.path.join(args.save_path, "result.pcd")
+        print(f"Saving point cloud to {pcd_file}...")
+        solver.map.write_points_to_file(solver.graph, pcd_file)
+        frame_output_dir = os.path.join(args.save_path, "frame_output")
+        print(f"Saving per-frame outputs to {frame_output_dir}...")
+        solver.map.save_frame_outputs(solver.graph, frame_output_dir)
 
     if args.log_results:
         solver.map.write_poses_to_file(args.log_path, solver.graph, kitti_format=False)

@@ -175,6 +175,37 @@ class GraphMap:
         assert count == len(self.rectifying_H_mats), "Number of rectifying mats and number of point maps do not match"
                 
 
+    def save_frame_outputs(self, graph, output_dir):
+        """
+        Save per-frame point map (world frame), confidence mask, cam-to-world extrinsic,
+        and 3x3 intrinsic to {output_dir}/{stem}.npz, where stem comes from each submap's
+        img_names. Loop-closure submaps are skipped.
+        """
+        os.makedirs(output_dir, exist_ok=True)
+        for submap in self.ordered_submaps_by_key():
+            if submap.get_lc_status():
+                continue
+            if submap.pointclouds is None or submap.poses is None:
+                continue
+
+            pointclouds, frame_ids, conf_masks = submap.get_points_list_in_world_frame(graph)
+            extrinsics_world = submap.get_all_poses_world(graph)
+            n = min(len(pointclouds), len(extrinsics_world))
+
+            for idx in range(n):
+                if submap.img_names and idx < len(submap.img_names):
+                    stem = os.path.splitext(os.path.basename(str(submap.img_names[idx])))[0]
+                else:
+                    stem = str(frame_ids[idx])
+                intrinsic = submap.proj_mats[idx][:3, :3] if submap.proj_mats is not None else None
+                np.savez(
+                    os.path.join(output_dir, f"{stem}.npz"),
+                    point_map_world=pointclouds[idx],
+                    conf_mask=conf_masks[idx],
+                    extrinsic_world=extrinsics_world[idx],
+                    intrinsic=intrinsic,
+                )
+
     def write_points_to_file(self, graph, file_name):
         pcd_all = []
         colors_all = []
